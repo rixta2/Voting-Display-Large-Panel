@@ -1,0 +1,169 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <SPI.h>
+#include <Adafruit_PN532.h>
+#include <XBee.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+
+// ** NFC Setup **
+#define SDA_PIN 21  // I2C SDA pin for PN532
+#define SCL_PIN 22  // I2C SCL pin for PN532
+Adafruit_PN532 nfc(SDA_PIN, SCL_PIN);
+
+// ** XBee Setup **
+#define RXD2 16  // ESP32 RX pin connected to XBee TX (DOUT)
+#define TXD2 17  // ESP32 TX pin connected to XBee RX (DIN)
+XBee xbee = XBee();
+XBeeAddress64 coordinatorAddress(0x00000000, 0x00000000); // Replace with your coordinator's 64-bit address
+
+// ** TFT Screen Setup **
+#define TFT_CS    5
+#define TFT_RST   4
+#define TFT_DC    32
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
+
+void displayOnTFT(const String& message) {
+  tft.fillScreen(ST7735_BLACK);
+  tft.setTextColor(ST7735_WHITE, ST7735_BLACK);
+  tft.setTextSize(2);  // Smaller size for 0.96-inch screen
+  int16_t x, y;
+  uint16_t w, h;
+  tft.getTextBounds(message.c_str(), 0, 0, &x, &y, &w, &h);
+  int16_t xPos = (tft.width() - w) / 2;
+  int16_t yPos = (tft.height() - h) / 2;
+  tft.setCursor(xPos, yPos);
+  tft.print(message);
+}
+
+void printHex(const uint8_t* data, int length) {
+  for (int i = 0; i < length; i++) {
+    if (data[i] < 0x10) Serial.print("0");
+    Serial.print(data[i], HEX);
+    Serial.print(" ");
+  }
+  Serial.println();
+}
+
+void sendUIDToCoordinator(const String& uid) {
+  ZBTxRequest txRequest = ZBTxRequest(coordinatorAddress, (uint8_t*)uid.c_str(), uid.length());
+
+  Serial.print("Sending XBee Packet (Hex): ");
+  printHex((uint8_t*)uid.c_str(), uid.length());
+
+  xbee.send(txRequest);
+
+  Serial.print("Sent UID to Coordinator: ");
+  Serial.println(uid);
+
+  if (xbee.readPacket(5000)) {
+    if (xbee.getResponse().getApiId() == 0x8B) {
+      TxStatusResponse txStatus = TxStatusResponse();
+      xbee.getResponse().getTxStatusResponse(txStatus);
+      if (txStatus.getStatus() == SUCCESS) {
+        Serial.println("Message sent successfully!");
+      } else {
+        Serial.print("Message delivery failed. Status: ");
+        Serial.println(txStatus.getStatus(), HEX);
+      }
+    }
+  } else {
+    Serial.println("No TX Status Response received.");
+  }
+}
+
+void receiveMessagesFromCoordinator() {
+  unsigned long startTime = millis();
+  String finalResponse = "";
+
+  while (millis() - startTime < 3000) {
+    if (xbee.readPacket(1000)) {
+      Serial.print("Received XBee Packet (Hex): ");
+      printHex(xbee.getResponse().getFrameData(), xbee.getResponse().getFrameDataLength());
+
+      ZBRxResponse rxResponse = ZBRxResponse();
+      xbee.getResponse().getZBRxResponse(rxResponse);
+
+      // Extract and trim payload
+      String response = "";
+      for (int i = 0; i < rxResponse.getDataLength(); i++) {
+        response += (char)rxResponse.getData()[i];
+      }
+      response.trim();  // Remove trailing nulls and whitespace
+
+      // Check if response is "wizard", "bard", or "rogue"
+      if (response == "wizard" || response == "bard" || response == "rouge") {
+        finalResponse = response;
+        break; // Exit the loop if a valid response is found
+      }
+
+      // Print the response
+      Serial.print("Received Response: ");
+      Serial.println(response);
+    } else {
+      Serial.println("No response received in this interval.");
+    }
+  }
+
+  // Display the final response if it matches "wizard", "bard", or "rogue"
+  if (!finalResponse.isEmpty()) {
+    displayOnTFT(finalResponse);
+    Serial.print("Displayed on TFT: ");
+    Serial.println(finalResponse);
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // NFC Initialization
+  nfc.begin();
+  uint32_t versiondata = nfc.getFirmwareVersion();
+  if (!versiondata) {
+    Serial.println("Didn't find PN53x board");
+    while (1);
+  }
+  nfc.SAMConfig();
+  Serial.println("NFC initialized. Waiting for an ISO14443A card...");
+
+  // XBee Initialization
+  Serial2.begin(115200, SERIAL_8N1, RXD2, TXD2);
+  xbee.setSerial(Serial2);
+  Serial.println("XBee initialized.");
+
+  // TFT Initialization
+  tft.initR(INITR_MINI160x80); // Adjust initialization for your screen model if needed
+  tft.fillScreen(ST7735_BLACK);
+  tft.setRotation(1);
+  displayOnTFT("Ready");
+}
+
+void loop() {
+  uint8_t success;
+  uint8_t uid[7] = {0};
+  uint8_t uidLength;
+
+  // Scan for an NFC card
+  success = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength);
+
+  if (success) {
+    String uidString = "";
+    for (uint8_t i = 0; i < uidLength; i++) {
+      if (uid[i] < 0x10) uidString += "0";
+      uidString += String(uid[i], HEX);
+    }
+    uidString.toUpperCase();
+    Serial.print("Scanned UID: ");
+    Serial.println(uidString);
+
+    // Send UID to Coordinator
+    sendUIDToCoordinator(uidString);
+
+    // Wait for and print the responses from the coordinator
+    receiveMessagesFromCoordinator();
+
+    delay(50);
+  }
+
+  delay(500);
+}
