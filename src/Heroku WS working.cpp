@@ -1,6 +1,8 @@
 #include <WiFi.h>
 #include <WebSocketsClient.h>
 #include <FastLED.h>
+#include <string>
+#include <iostream>
 
 #ifndef WIFI_SSID
   #define WIFI_SSID "Unknown_SSID"
@@ -23,7 +25,7 @@ const char* password = WIFI_PASSWORD;
 
 String websocket_server = SERVER;
 String factionName = FACTION_NAME;
-String wsPath = "/score_ws/" + factionName + "/timed";
+String wsPath = "/score_ws/" + factionName;
 const uint16_t websocket_port = 80;
 unsigned long lastLoop = 0;
 int currentDigits[4] = {-1, -1, -1, -1};  // -1 means nothing shown
@@ -45,6 +47,8 @@ CRGB leds3[NUM_LEDS];
 CRGB leds4[NUM_LEDS];
 
 const int segmentLengths[7] = {14, 13, 14, 14, 14, 15, 13};
+int previousScore = 0;
+
 
 // 7-segment LED mapping (excluding filler LEDs 0 and 13)
 const int segmentMap[7][15] = {
@@ -86,31 +90,63 @@ void displayDigit(int digit, CRGB leds[]) {
 
   }
 
-  void updateDisplay(String score) {
-    if (score.length() > 4) {
-        score = score.substring(score.length() - 4);
-    }
+  void updateDisplay(int score_int) {
+    Serial.print("Inside update display");
+    std::string score = std::to_string(score_int);
 
     while (score.length() < 4) {
-        score = "0" + score;
+      score = ' ' + score; // Add a blank space to the right
     }
 
-    bool leadingZero = true;
-
-    for (int i = 0; i < 4; i++) {
-        int digit = score[i] - '0';
-
-        if (digit != 0 || i == 3) {
-            leadingZero = false;
+    for (size_t i = 0; i < score.length() ; i++) {
+        if(score[i] == ' ') {
+          switch(i) {
+            case 0:
+              for (int a = 0; a < NUM_LEDS; a++) {
+                leds1[a] = CRGB::Black;
+              }
+                break;
+            case 1:
+            for (int a = 0; a < NUM_LEDS; a++) {
+              leds2[a] = CRGB::Black;
+            }
+              break;
+            case 2:
+            for (int a = 0; a < NUM_LEDS; a++) {
+              leds3[a] = CRGB::Black;
+            }
+              break;
+            case 3:
+            for (int a = 0; a < NUM_LEDS; a++) {
+              leds4[a] = CRGB::Black;
+            }
+              break;
         }
-
-        int displayDigitValue = leadingZero ? -1 : digit;
-
-        if (displayDigitValue != currentDigits[i]) {
-            currentDigits[i] = displayDigitValue;
-            CRGB* targetStrip = (i == 0) ? leds1 : (i == 1) ? leds2 : (i == 2) ? leds3 : leds4;
-            displayDigit(displayDigitValue, targetStrip);
+          continue;
         }
+        int displayDigitValue = score[i] - '0';
+        Serial.print("Display digit value: ");
+        Serial.println(displayDigitValue);
+        Serial.print("score[i]: ");
+        Serial.println(score[i]);
+
+        currentDigits[i] = displayDigitValue;
+        
+        switch(i) {
+            case 0:
+                displayDigit(displayDigitValue, leds1);
+                break;
+            case 1:
+                displayDigit(displayDigitValue, leds2);
+                break;
+            case 2:
+                displayDigit(displayDigitValue, leds3);
+                break;
+            case 3:
+                displayDigit(displayDigitValue, leds4);
+                break;
+        }
+        
     }
 
     FastLED.show();
@@ -134,13 +170,20 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
             Serial.println(receivedScore);
 
             int score = receivedScore.toInt();
-            if (score >= 0 && score <= 9999) {  
-                updateDisplay(String(score));  
+            if (score >= 0 && score <= 9999 && score != previousScore) {  
+
+                updateDisplay(score);  
+                previousScore = score;
+                Serial.print("[INFO] Updated display to score: ");
+                Serial.println(score);
             } else {
                 Serial.println("[WARNING] Invalid score received, ignoring...");
             }
             break;
         }
+        case WStype_PONG:
+        case WStype_PING:
+            break;
 
         case WStype_DISCONNECTED:
             Serial.println("[ERROR] Disconnected from WebSocket server!");
@@ -199,7 +242,6 @@ void loop() {
             connectWiFi();
         }
     
-        // Check if WebSocket is still connected
         if (!webSocket.isConnected()) {
             Serial.println("[ERROR] Lost WebSocket connection! Attempting reconnect...");
             connectWebSocket();
